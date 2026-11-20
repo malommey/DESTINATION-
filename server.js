@@ -8,8 +8,6 @@ app.use(cors());
 app.use(express.json());
 
 // 1. Initialize Firebase Admin
-// You will store your service account JSON in Render's Environment Variables
-// See the step-by-step setup below
 let db;
 try {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -25,31 +23,53 @@ try {
 // 2. API Endpoint: Launch Campaign
 app.post('/api/launch', async (req, res) => {
     try {
-        const { query, platforms, caption } = req.body;
+        // We added 'budget' to the destructured request body
+        const { query, platforms, caption, budget } = req.body;
         
-        // Save to Firestore (using a 'campaigns' collection)
+        // Basic validation
+        if (!query || !caption || !budget) {
+            return res.status(400).json({ success: false, message: "Missing required fields" });
+        }
+
+        // Calculate the 20% service fee
+        const serviceFee = budget * 0.20;
+        const adSpend = budget * 0.80;
+        
+        // Save to Firestore
         const docRef = await db.collection('campaigns').add({
             query,
             platforms,
             caption,
+            budget: Number(budget),
+            serviceFee: Number(serviceFee),
+            adSpend: Number(adSpend),
             status: 'active',
-            createdAt: new Date() // Firestore handles JS Dates automatically
+            createdAt: new Date() 
         });
 
-        res.status(200).json({ success: true, message: "Campaign launched to Firebase!", id: docRef.id });
+        res.status(200).json({ 
+            success: true, 
+            message: "Campaign launched to Firebase!", 
+            id: docRef.id 
+        });
     } catch (error) {
-        console.error(error);
+        console.error("Error saving to Firestore:", error);
         res.status(500).json({ success: false, message: "Server Error" });
     }
 });
 
 // 3. API Endpoint: Get Engagement Feed
 app.get('/api/feed', async (req, res) => {
-    // In a real app, you would query Firestore here instead of hardcoding
-    res.json([
-        { user: "John Doe", text: "This looks great!", platform: "Facebook" },
-        { user: "Sarah M.", text: "Listened to the audio promo.", platform: "X" }
-    ]);
+    try {
+        // In a real app, you would fetch real engagements from Firestore
+        // For now, we return a mock array so the frontend works
+        res.json([
+            { user: "John Doe", text: "This looks great!", platform: "Facebook" },
+            { user: "Sarah M.", text: "Listened to the audio promo.", platform: "X" }
+        ]);
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Failed to load feed" });
+    }
 });
 
 // 4. Start Server
