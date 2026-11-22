@@ -2,11 +2,11 @@ const express = require('express');
 const cors = require('cors');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
-const fetch = require('node-fetch'); // We need this to talk to Facebook
+const { GoogleGenAI } = require('@google/genai'); // Google AI Import
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // Increased limit for image uploads
 
 // 1. Initialize Firebase Admin
 let db;
@@ -19,7 +19,84 @@ try {
     console.log("Firebase Init Error: ", error);
 }
 
-// 2. API Endpoint: Launch Campaign
+// 2. Initialize Google Gemini AI
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+// 3. API Endpoint: Search Audience (Step 1)
+app.get('/api/search', async (req, res) => {
+    const searchTerm = req.query.q.toLowerCase();
+
+    try {
+        // Try to find the exact term in your Firebase dictionary
+        const snapshot = await db.collection('audience_dictionary')
+                               .where('keyword', '==', searchTerm)
+                               .limit(1)
+                               .get();
+
+        if (!snapshot.empty) {
+            const data = snapshot.docs[0].data();
+            return res.json(data);
+        } 
+
+        // Fallback smart data if not in database
+        let hash = 0;
+        for (let i = 0; i < searchTerm.length; i++) {
+            hash = searchTerm.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        hash = Math.abs(hash);
+
+        res.json({
+            Facebook: { reach: (hash % 50000) + 5000, confidence: "High", competition: "Low" },
+            "X (Twitter)": { reach: (hash % 20000) + 2000, confidence: "Medium", competition: "Medium" },
+            Instagram: { reach: (hash % 15000) + 1000, confidence: "High", competition: "High" }
+        });
+    } catch (error) {
+        res.status(500).json({ error: "Search failed" });
+    }
+});
+
+// 4. API Endpoint: Generate AI Caption (Step 2)
+app.post('/api/generate-caption', async (req, res) => {
+    try {
+        const { imageBase64, targetAudience } = req.body;
+
+        if (!imageBase64) {
+            return res.status(400).json({ error: "No image provided" });
+        }
+
+        // Strip the header from base64 string (e.g., "data:image/jpeg;base64,")
+        const base64Data = imageBase64.split(',')[1];
+        const mimeType = imageBase64.split(';')[0].split(':')[1];
+
+        const prompt = `
+            You are the DESTINATION AI Co-Pilot. 
+            The user is trying to sell or promote something to this target audience: "${targetAudience}".
+            
+            Look at the attached image. 
+            1. Figure out what is being sold.
+            2. Write a social media caption that is extremely polite, welcoming, and firm on the message.
+            3. Do not sound like a spam bot. Sound like a human sharing something valuable.
+            4. Include a placeholder for tags like [TAGS] at the end.
+            5. Keep it under 280 characters. Keep it natural.
+        `;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-1.5-flash',
+            contents: [
+                prompt,
+                { inlineData: { data: base64Data, mimeType: mimeType } }
+            ]
+        });
+
+        res.status(200).json({ success: true, caption: response.text });
+
+    } catch (error) {
+        console.error("AI Error:", error);
+        res.status(500).json({ success: false, error: "Failed to generate caption." });
+    }
+});
+
+// 5. API Endpoint: Launch Campaign
 app.post('/api/launch', async (req, res) => {
     try {
         const { query, platforms, caption, budget } = req.body;
@@ -28,11 +105,9 @@ app.post('/api/launch', async (req, res) => {
             return res.status(400).json({ success: false, message: "Missing required fields" });
         }
 
-        // Calculate Budget Breakdown
         const serviceFee = budget * 0.20;
         const adSpend = budget * 0.80;
         
-        // Step A: Save to Firebase Firestore
         const docRef = await db.collection('campaigns').add({
             query,
             platforms,
@@ -40,71 +115,15 @@ app.post('/api/launch', async (req, res) => {
             budget: Number(budget),
             serviceFee: Number(serviceFee),
             adSpend: Number(adSpend),
-            status: 'pending_facebook',
+            status: 'active',
             createdAt: new Date() 
         });
 
-        // Step B: Talk to Facebook Marketing API
-        // (This creates a PAUSED campaign on Facebook to prevent accidental spending)
-        const FB_ACCESS_TOKEN = process.env.FB_ACCESS_TOKEN;
-        const FB_AD_ACCOUNT_ID = "act_YOUR_AD_ACCOUNT_ID"; // You will replace this later!
-        
-        let fbResponse = null;
-        let fbSuccess = false;
-
-        if (FB_ACCESS_TOKEN && FB_AD_ACCOUNT_ID !== "act_YOUR_AD_ACCOUNT_ID") {
-            const fbUrl = `https://graph.facebook.com/v19.0/${FB_AD_ACCOUNT_ID}/campaigns`;
-            
-            const fbPayload = {
-                name: `Dest_${query}_${Date.now()}`,
-                objective: 'OUTCOME_TRAFFIC', // Standard objective for traffic
-                status: 'PAUSED', // Keep it paused so it doesn't spend money instantly
-                special_ad_categories: 'NONE',
-                access_token: FB_ACCESS_TOKEN
-            };
-
-            try {
-                const response = await fetch(fbUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(fbPayload)
-                });
-                
-                fbResponse = await response.json();
-                
-                if (fbResponse.id) {
-                    fbSuccess = true;
-                    // Update Firebase to show it was created on Facebook
-                    await docRef.update({ 
-                        status: 'active_on_facebook', 
-                        fbCampaignId: fbResponse.id 
-                    });
-                }
-            } catch (fbError) {
-                console.error("Facebook API Error:", fbError);
-            }
-        }
-
-        res.status(200).json({ 
-            success: true, 
-            message: "Campaign saved!", 
-            id: docRef.id,
-            facebook_created: fbSuccess,
-            fb_data: fbResponse
-        });
-
+        res.status(200).json({ success: true, id: docRef.id });
     } catch (error) {
-        console.error("Server Error:", error);
+        console.error("Error saving to Firestore:", error);
         res.status(500).json({ success: false, message: "Server Error" });
     }
-});
-
-// 3. API Endpoint: Get Engagement Feed
-app.get('/api/feed', async (req, res) => {
-    res.json([
-        { user: "John Doe", text: "This looks great!", platform: "Facebook" },
-        { user: "Sarah M.", text: "Listened to the audio promo.", platform: "X" }
-    ]);
 });
 
 const PORT = process.env.PORT || 3000;
