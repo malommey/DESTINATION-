@@ -55,7 +55,7 @@ app.get('/api/search', async (req, res) => {
     }
 });
 
-// 4. API Endpoint: Generate AI Caption (Step 2)
+// 4. API Endpoint: Generate AI Caption (Step 2) - FIXED
 app.post('/api/generate-caption', async (req, res) => {
     try {
         const { imageBase64, targetAudience } = req.body;
@@ -64,9 +64,11 @@ app.post('/api/generate-caption', async (req, res) => {
             return res.status(400).json({ error: "No image provided" });
         }
 
-        // Strip the header from base64 string (e.g., "data:image/jpeg;base64,")
-        const base64Data = imageBase64.split(',')[1];
-        const mimeType = imageBase64.split(';')[0].split(':')[1];
+        // --- THE FIX: Clean the Base64 string ---
+        // 1. Split the string to isolate the MIME type and the raw data
+        const parts = imageBase64.split(',');
+        const mimeType = parts[0].match(/:(.*?);/)[1]; // Extracts "image/jpeg", "image/png", etc.
+        const base64Data = parts[1]; // This is the raw data WITHOUT the prefix
 
         const prompt = `
             You are the DESTINATION AI Co-Pilot. 
@@ -81,48 +83,23 @@ app.post('/api/generate-caption', async (req, res) => {
         `;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-1.5-flash',
+            model: 'gemini-1.5-flash', // or 'gemini-2.0-flash' if available
             contents: [
                 prompt,
-                { inlineData: { data: base64Data, mimeType: mimeType } }
+                { 
+                    inlineData: { 
+                        data: base64Data, // Use the CLEANED data
+                        mimeType: mimeType // Use the CORRECT MIME type
+                    } 
+                }
             ]
         });
 
         res.status(200).json({ success: true, caption: response.text });
 
     } catch (error) {
-        console.error("AI Error:", error);
+        console.error("AI Error Details:", error); // This will show the exact error in Render logs
         res.status(500).json({ success: false, error: "Failed to generate caption." });
-    }
-});
-
-// 5. API Endpoint: Launch Campaign
-app.post('/api/launch', async (req, res) => {
-    try {
-        const { query, platforms, caption, budget } = req.body;
-        
-        if (!query || !caption || !budget) {
-            return res.status(400).json({ success: false, message: "Missing required fields" });
-        }
-
-        const serviceFee = budget * 0.20;
-        const adSpend = budget * 0.80;
-        
-        const docRef = await db.collection('campaigns').add({
-            query,
-            platforms,
-            caption,
-            budget: Number(budget),
-            serviceFee: Number(serviceFee),
-            adSpend: Number(adSpend),
-            status: 'active',
-            createdAt: new Date() 
-        });
-
-        res.status(200).json({ success: true, id: docRef.id });
-    } catch (error) {
-        console.error("Error saving to Firestore:", error);
-        res.status(500).json({ success: false, message: "Server Error" });
     }
 });
 
