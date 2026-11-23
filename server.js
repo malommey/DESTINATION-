@@ -8,11 +8,7 @@ const sharp = require('sharp');
 const app = express();
 
 // 1. EXPLICIT CORS CONFIGURATION
-app.use(cors({
-    origin: 'https://rad-caramel-da0bd5.netlify.app', // Your exact Netlify URL
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type']
-}));
+app.use(cors()); // This accepts requests from ANY URL
 
 app.use(express.json({ limit: '10mb' }));
 
