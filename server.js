@@ -62,24 +62,16 @@ app.get('/api/search', async (req, res) => {
 app.post('/api/generate-caption', async (req, res) => {
     try {
         const { imageBase64, targetAudience } = req.body;
-        console.log("Received image request for audience:", targetAudience); // Debug log
+        console.log("Received image request for audience:", targetAudience);
 
         if (!imageBase64) {
             return res.status(400).json({ error: "No image provided" });
         }
 
-        // Clean the Base64 string
+        // Clean the Base64 string (Frontend already compressed it!)
         const parts = imageBase64.split(',');
         const mimeType = parts[0].match(/:(.*?);/)[1];
         const base64Data = parts[1];
-
-        // Compress the image
-        const imageBuffer = Buffer.from(base64Data, 'base64');
-        const compressedBuffer = await sharp(imageBuffer)
-            .resize({ width: 800, height: 800, fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: 80 })
-            .toBuffer();
-        const cleanBase64 = compressedBuffer.toString('base64');
 
         const prompt = `You are the DESTINATION AI Co-Pilot. 
 The user is trying to sell or promote something to this target audience: "${targetAudience}".
@@ -90,20 +82,20 @@ Look at the attached image.
 4. Include a placeholder for tags like [TAGS] at the end.
 5. Keep it under 280 characters. Keep it natural.`;
 
-        console.log("Sending to Gemini..."); // Debug log
+        console.log("Sending to Gemini...");
 
         const result = await model.generateContent([
             prompt,
             {
                 inlineData: {
-                    data: cleanBase64,
-                    mimeType: "image/jpeg"
+                    data: base64Data,
+                    mimeType: mimeType
                 }
             }
         ]);
 
         const responseText = result.response.text();
-        console.log("Gemini Response:", responseText); // Debug log
+        console.log("Gemini Response:", responseText);
 
         res.status(200).json({ success: true, caption: responseText });
 
