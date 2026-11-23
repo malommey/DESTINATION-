@@ -80,7 +80,10 @@ Look at the attached image.
         console.log("Sending to Gemini...");
 
         // Use the correct, stable model name
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+        const model = genAI.getGenerativeModel(
+    { model: "gemini-1.5-flash" }, 
+    { apiVersion: "v1" } // Force the stable v1 API
+);
 
         const result = await model.generateContent([
             prompt,
