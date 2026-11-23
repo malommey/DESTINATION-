@@ -2,13 +2,21 @@ const express = require('express');
 const cors = require('cors');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
-const { GoogleGenerativeAI } = require('@google/generative-ai'); // CORRECT SDK
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const sharp = require('sharp');
 
 const app = express();
-app.use(cors());
+
+// 1. EXPLICIT CORS CONFIGURATION
+app.use(cors({
+    origin: 'https://rad-caramel-da0bd5.netlify.app', // Your exact Netlify URL
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type']
+}));
+
 app.use(express.json({ limit: '10mb' }));
 
-// 1. Initialize Firebase Admin
+// 2. Initialize Firebase Admin
 let db;
 try {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -19,11 +27,11 @@ try {
     console.log("Firebase Init Error: ", error);
 }
 
-// 2. Initialize Google Gemini AI
+// 3. Initialize Google Gemini AI (Using the stable model)
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // CHANGED TO STABLE MODEL
 
-// 3. API Endpoint: Search Audience (Step 1)
+// 4. API Endpoint: Search Audience
 app.get('/api/search', async (req, res) => {
     const searchTerm = req.query.q.toLowerCase();
 
@@ -54,11 +62,11 @@ app.get('/api/search', async (req, res) => {
     }
 });
 
-// 4. API Endpoint: Generate AI Caption (Step 2) - CORRECTED SDK
-const sharp = require('sharp'); // Add this at the top of your server.js
+// 5. API Endpoint: Generate AI Caption
 app.post('/api/generate-caption', async (req, res) => {
     try {
         const { imageBase64, targetAudience } = req.body;
+        console.log("Received image request for audience:", targetAudience); // Debug log
 
         if (!imageBase64) {
             return res.status(400).json({ error: "No image provided" });
@@ -69,6 +77,14 @@ app.post('/api/generate-caption', async (req, res) => {
         const mimeType = parts[0].match(/:(.*?);/)[1];
         const base64Data = parts[1];
 
+        // Compress the image
+        const imageBuffer = Buffer.from(base64Data, 'base64');
+        const compressedBuffer = await sharp(imageBuffer)
+            .resize({ width: 800, height: 800, fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 80 })
+            .toBuffer();
+        const cleanBase64 = compressedBuffer.toString('base64');
+
         const prompt = `You are the DESTINATION AI Co-Pilot. 
 The user is trying to sell or promote something to this target audience: "${targetAudience}".
 Look at the attached image. 
@@ -78,18 +94,20 @@ Look at the attached image.
 4. Include a placeholder for tags like [TAGS] at the end.
 5. Keep it under 280 characters. Keep it natural.`;
 
-        // CORRECT API CALL for @google/generative-ai
+        console.log("Sending to Gemini..."); // Debug log
+
         const result = await model.generateContent([
             prompt,
             {
                 inlineData: {
-                    data: base64Data,
-                    mimeType: mimeType
+                    data: cleanBase64,
+                    mimeType: "image/jpeg"
                 }
             }
         ]);
 
         const responseText = result.response.text();
+        console.log("Gemini Response:", responseText); // Debug log
 
         res.status(200).json({ success: true, caption: responseText });
 
