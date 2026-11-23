@@ -81,10 +81,9 @@ Look at the attached image.
 
         // Use the correct, stable model name
         const model = genAI.getGenerativeModel(
-    { model: "gemini-1.5-flash" }, 
-    { apiVersion: "v1" } // Force the stable v1 API
+    { model: "gemini-1.5-flash-8b" }, // Use the 8B model
+    { apiVersion: "v1beta" }          // Go back to v1beta
 );
-
         const result = await model.generateContent([
             prompt,
             {
