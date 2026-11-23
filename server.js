@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const axios = require('axios'); // Required for Paystack
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -75,7 +76,6 @@ Look at the attached image.
         let responseText = "";
         let success = false;
 
-        // --- FALLBACK 1: Try the 8B Model ---
         try {
             const model1 = genAI.getGenerativeModel({ model: "gemini-1.5-flash-8b" });
             const result1 = await model1.generateContent([prompt, { inlineData: { data: base64Data, mimeType: "image/jpeg" } }]);
@@ -83,9 +83,7 @@ Look at the attached image.
             success = true;
             console.log("Success with gemini-1.5-flash-8b");
         } catch (err1) {
-            console.log("Fallback 1 failed (gemini-1.5-flash-8b). Trying gemini-pro-vision...");
-            
-            // --- FALLBACK 2: Try the classic Vision Model ---
+            console.log("Fallback 1 failed. Trying gemini-pro-vision...");
             try {
                 const model2 = genAI.getGenerativeModel({ model: "gemini-pro-vision" });
                 const result2 = await model2.generateContent([prompt, { inlineData: { data: base64Data, mimeType: "image/jpeg" } }]);
@@ -93,19 +91,69 @@ Look at the attached image.
                 success = true;
                 console.log("Success with gemini-pro-vision");
             } catch (err2) {
-                console.error("All models failed.");
-                throw err2; // Throw to the main catch block
+                console.error("All AI models failed.");
+                throw err2;
             }
         }
 
         if (success) {
-            console.log("Gemini Success:", responseText);
             res.status(200).json({ success: true, caption: responseText });
         }
 
     } catch (error) {
-        console.error("AI Error Details:", error);
+        console.error("AI Error Details:", error.message);
         res.status(500).json({ success: false, error: "Failed to generate caption." });
+    }
+});
+
+// 6. API Endpoint: Verify Paystack & Launch Campaign (MILESTONE 1)
+app.post('/api/launch', async (req, res) => {
+    try {
+        const { query, platforms, caption, budget, paymentRef } = req.body;
+        console.log("Verifying payment for ref:", paymentRef);
+
+        if (!paymentRef) {
+            return res.status(400).json({ success: false, message: "No payment reference provided." });
+        }
+
+        // 1. VERIFY WITH PAYSTACK
+        const paystackResponse = await axios.get(`https://api.paystack.co/transaction/verify/${paymentRef}`, {
+            headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` }
+        });
+
+        const paymentData = paystackResponse.data.data;
+
+        // 2. Ensure payment is actually successful
+        if (paymentData.status !== 'success') {
+            return res.status(400).json({ success: false, message: "Payment was not successful." });
+        }
+
+        // 3. Ensure amount paid matches budget
+        const amountPaidInNaira = paymentData.amount / 100;
+        if (amountPaidInNaira !== Number(budget)) {
+            return res.status(400).json({ success: false, message: "Payment amount mismatch." });
+        }
+
+        // 4. Calculate splits and save to Firebase
+        const serviceFee = budget * 0.20;
+        const adSpend = budget * 0.80;
+        
+        const docRef = await db.collection('campaigns').add({
+            query, platforms, caption,
+            budget: Number(budget),
+            serviceFee: Number(serviceFee),
+            adSpend: Number(adSpend),
+            paymentRef: paymentRef,
+            status: 'active',
+            createdAt: new Date() 
+        });
+
+        console.log("Campaign saved successfully to Firebase:", docRef.id);
+        res.status(200).json({ success: true, id: docRef.id });
+
+    } catch (error) {
+        console.error("Payment Verification Error:", error.message);
+        res.status(500).json({ success: false, message: "Payment Verification Failed" });
     }
 });
 
