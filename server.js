@@ -3,13 +3,11 @@ const cors = require('cors');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const sharp = require('sharp');
 
 const app = express();
 
-// 1. EXPLICIT CORS CONFIGURATION
-app.use(cors()); // This accepts requests from ANY URL
-
+// 1. CORS Configuration (Allow all for testing)
+app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 // 2. Initialize Firebase Admin
@@ -23,9 +21,8 @@ try {
     console.log("Firebase Init Error: ", error);
 }
 
-// 3. Initialize Google Gemini AI (Using the stable model)
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY); 
-const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" });// CHANGED TO STABLE MODEL
+// 3. Initialize Google Gemini AI
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // 4. API Endpoint: Search Audience
 app.get('/api/search', async (req, res) => {
@@ -58,7 +55,7 @@ app.get('/api/search', async (req, res) => {
     }
 });
 
-// 5. API Endpoint: Generate AI Caption
+// 5. API Endpoint: Generate AI Caption (The Final Version)
 app.post('/api/generate-caption', async (req, res) => {
     try {
         const { imageBase64, targetAudience } = req.body;
@@ -68,10 +65,8 @@ app.post('/api/generate-caption', async (req, res) => {
             return res.status(400).json({ error: "No image provided" });
         }
 
-        // Clean the Base64 string (Frontend already compressed it!)
-        const parts = imageBase64.split(',');
-        const mimeType = parts[0].match(/:(.*?);/)[1];
-        const base64Data = parts[1];
+        // Clean the Base64 string (Frontend already compressed it to JPEG)
+        const base64Data = imageBase64.split(',')[1];
 
         const prompt = `You are the DESTINATION AI Co-Pilot. 
 The user is trying to sell or promote something to this target audience: "${targetAudience}".
@@ -84,24 +79,27 @@ Look at the attached image.
 
         console.log("Sending to Gemini...");
 
+        // Use the correct, stable model name
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+
         const result = await model.generateContent([
             prompt,
             {
                 inlineData: {
                     data: base64Data,
-                    mimeType: mimeType
+                    mimeType: "image/jpeg" // Frontend compressed it to JPEG
                 }
             }
         ]);
 
         const responseText = result.response.text();
-        console.log("Gemini Response:", responseText);
+        console.log("Gemini Success:", responseText);
 
         res.status(200).json({ success: true, caption: responseText });
 
     } catch (error) {
         console.error("AI Error Details:", error);
-        res.status(500).json({ success: false, error: "Failed to generate caption." });
+        res.status(500).json({ success: false, error: "Failed to generate caption. Check server logs." });
     }
 });
 
