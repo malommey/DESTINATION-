@@ -55,6 +55,7 @@ app.get('/api/search', async (req, res) => {
 });
 
 // 4. API Endpoint: Generate AI Caption (Step 2) - CORRECTED SDK
+const sharp = require('sharp'); // Add this at the top of your server.js
 app.post('/api/generate-caption', async (req, res) => {
     try {
         const { imageBase64, targetAudience } = req.body;
