@@ -1,17 +1,14 @@
 const express = require('express');
 const cors = require('cors');
-const axios = require('axios'); // Required for Paystack
+const axios = require('axios');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
-
-// 1. CORS Configuration
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// 2. Initialize Firebase Admin
+// 1. Initialize Firebase
 let db;
 try {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -22,10 +19,7 @@ try {
     console.log("Firebase Init Error: ", error);
 }
 
-// 3. Initialize Google Gemini AI
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
-// 4. API Endpoint: Search Audience
+// 2. API Endpoint: Search Audience
 app.get('/api/search', async (req, res) => {
     const searchTerm = req.query.q.toLowerCase();
     try {
@@ -51,7 +45,7 @@ app.get('/api/search', async (req, res) => {
     }
 });
 
-// 5. API Endpoint: Generate AI Caption
+// 3. API Endpoint: Generate AI Caption (Using Native Fetch!)
 app.post('/api/generate-caption', async (req, res) => {
     try {
         const { imageBase64, targetAudience } = req.body;
@@ -61,8 +55,13 @@ app.post('/api/generate-caption', async (req, res) => {
             return res.status(400).json({ error: "No image provided" });
         }
 
-        const base64Data = imageBase64.split(',')[1];
-        const prompt = `You are the DESTINATION AI Co-Pilot. 
+        const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+        if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is missing in Render.");
+
+        const base64Data = imageBase64.split(',')[1]; 
+        const mimeType = imageBase64.split(';')[0].split(':')[1];
+
+        const promptText = `You are the DESTINATION AI Co-Pilot. 
 The user is trying to sell or promote something to this target audience: "${targetAudience}".
 Look at the attached image. 
 1. Figure out what is being sold.
@@ -71,34 +70,34 @@ Look at the attached image.
 4. Include a placeholder for tags like [TAGS] at the end.
 5. Keep it under 280 characters. Keep it natural.`;
 
-        console.log("Sending to Gemini...");
+        // --- USING NATIVE FETCH ---
+        // Note: Using gemini-1.5-flash which is universally supported
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+        
+        const response = await fetch(geminiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                contents: [{
+                    parts: [
+                        { text: promptText },
+                        { inline_data: { mime_type: mimeType, data: base64Data } }
+                    ]
+                }]
+            })
+        });
 
-        let responseText = "";
-        let success = false;
-
-        try {
-            const model1 = genAI.getGenerativeModel({ model: "gemini-1.5-flash-8b" });
-            const result1 = await model1.generateContent([prompt, { inlineData: { data: base64Data, mimeType: "image/jpeg" } }]);
-            responseText = result1.response.text();
-            success = true;
-            console.log("Success with gemini-1.5-flash-8b");
-        } catch (err1) {
-            console.log("Fallback 1 failed. Trying gemini-pro-vision...");
-            try {
-                const model2 = genAI.getGenerativeModel({ model: "gemini-pro-vision" });
-                const result2 = await model2.generateContent([prompt, { inlineData: { data: base64Data, mimeType: "image/jpeg" } }]);
-                responseText = result2.response.text();
-                success = true;
-                console.log("Success with gemini-pro-vision");
-            } catch (err2) {
-                console.error("All AI models failed.");
-                throw err2;
-            }
+        const data = await response.json();
+        
+        if (data.error) {
+            console.error("Gemini API Error:", data.error.message);
+            throw new Error(data.error.message);
         }
 
-        if (success) {
-            res.status(200).json({ success: true, caption: responseText });
-        }
+        const aiText = data.candidates[0].content.parts[0].text;
+        console.log("Gemini Success:", aiText);
+
+        res.status(200).json({ success: true, caption: aiText });
 
     } catch (error) {
         console.error("AI Error Details:", error.message);
@@ -106,7 +105,7 @@ Look at the attached image.
     }
 });
 
-// 6. API Endpoint: Verify Paystack & Launch Campaign (MILESTONE 1)
+// 4. API Endpoint: Verify Paystack & Launch Campaign
 app.post('/api/launch', async (req, res) => {
     try {
         const { query, platforms, caption, budget, paymentRef } = req.body;
@@ -158,4 +157,4 @@ app.post('/api/launch', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Destination Backend running on port ${PORT}`));
