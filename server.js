@@ -1,160 +1,109 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const { initializeApp, cert } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// 1. Initialize Firebase
-let db;
-try {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    initializeApp({ credential: cert(serviceAccount) });
-    db = getFirestore();
-    console.log("Firebase connected successfully");
-} catch (error) {
-    console.log("Firebase Init Error: ", error);
-}
-
-// 2. API Endpoint: Search Audience
+// ==========================================
+// THE FEDERATED SEARCH ROUTER (PHASE 2)
+// ==========================================
 app.get('/api/search', async (req, res) => {
-    const searchTerm = req.query.q.toLowerCase();
+    const { q, industry } = req.query;
+    if (!q) return res.status(400).json({ error: "Search query required" });
+
+    let results = [];
+
     try {
-        const snapshot = await db.collection('audience_dictionary')
-                               .where('keyword', '==', searchTerm)
-                               .limit(1)
-                               .get();
-        if (!snapshot.empty) {
-            return res.json(snapshot.docs[0].data());
-        } 
-        let hash = 0;
-        for (let i = 0; i < searchTerm.length; i++) {
-            hash = searchTerm.charCodeAt(i) + ((hash << 5) - hash);
-        }
-        hash = Math.abs(hash);
-        res.json({
-            Facebook: { reach: (hash % 50000) + 5000, confidence: "High", competition: "Low" },
-            "X (Twitter)": { reach: (hash % 20000) + 2000, confidence: "Medium", competition: "Medium" },
-            Instagram: { reach: (hash % 15000) + 1000, confidence: "High", competition: "High" }
-        });
-    } catch (error) {
-        res.status(500).json({ error: "Search failed" });
-    }
-});
+        switch (industry) {
+            case 'tech':
+                // --- FREE: GITHUB API ---
+                console.log("Searching GitHub for:", q);
+                const ghRes = await axios.get(`https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=10`, {
+                    headers: { 'Accept': 'application/vnd.github.v3+json' }
+                });
+                results = ghRes.data.items.map(user => ({
+                    name: user.login,
+                    platform: "GitHub",
+                    profileUrl: user.html_url,
+                    avatar: user.avatar_url,
+                    bio: "Developer on GitHub"
+                }));
+                break;
 
-// 3. API Endpoint: Generate AI Caption (Using Native Fetch!)
-app.post('/api/generate-caption', async (req, res) => {
-    try {
-        const { imageBase64, targetAudience } = req.body;
-        console.log("Received image request for audience:", targetAudience);
+            case 'food':
+                // --- FREE: GOOGLE PLACES API ---
+                // IMPORTANT: You need GOOGLE_PLACES_API_KEY in your Render Environment Variables
+                console.log("Searching Google Places for:", q);
+                if (!process.env.GOOGLE_PLACES_API_KEY) {
+                    throw new Error("Google Places API key is missing.");
+                }
+                const gRes = await axios.get(`https://maps.googleapis.com/maps/api/place/textsearch/json`, {
+                    params: { query: q, key: process.env.GOOGLE_PLACES_API_KEY }
+                });
+                if (gRes.data.status !== 'OK') throw new Error(gRes.data.error_message || "Google Places failed");
+                
+                results = gRes.data.results.map(place => ({
+                    name: place.name,
+                    platform: "Google Maps",
+                    profileUrl: `https://www.google.com/maps/place/?q=place_id:${place.place_id}`,
+                    avatar: "https://via.placeholder.com/50?text=Map", // Placeholder icon
+                    bio: place.formatted_address
+                }));
+                break;
 
-        if (!imageBase64) {
-            return res.status(400).json({ error: "No image provided" });
-        }
+            case 'realestate':
+                // --- FREE: OPENSTREETMAP API ---
+                console.log("Searching OpenStreetMap for:", q);
+                const osmRes = await axios.get(`https://nominatim.openstreetmap.org/search`, {
+                    params: { q: q, format: 'json', limit: 10, addressdetails: 1 },
+                    headers: { 'User-Agent': 'DestinationApp/1.0 (contact@destination.com)' } // Required by OSM
+                });
+                results = osmRes.data.map(place => ({
+                    name: place.display_name.split(',')[0], // Just the main name
+                    platform: "OpenStreetMap",
+                    profileUrl: `https://www.openstreetmap.org/${place.osm_type}/${place.osm_id}`,
+                    avatar: "https://via.placeholder.com/50?text=Map",
+                    bio: place.display_name
+                }));
+                break;
 
-        const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-        if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is missing in Render.");
+            case 'b2b':
+                // --- FREE: FYLINGS API (Nigerian CAC Data) ---
+                // Note: You will need to sign up at fylings.com to get an API key
+                console.log("Searching Fylings for:", q);
+                if (!process.env.FYLINGS_API_KEY) {
+                    // Fallback if you don't have the key yet
+                    return res.status(200).json({ 
+                        success: true, 
+                        results: [{ name: "Fylings API Pending", platform: "Fylings", profileUrl: "#", avatar: "", bio: "Please add FYLINGS_API_KEY to Render" }] 
+                    });
+                }
+                const fRes = await axios.get(`https://api.fylings.com/v1/search?q=${encodeURIComponent(q)}`, {
+                    headers: { 'Authorization': `Bearer ${process.env.FYLINGS_API_KEY}` }
+                });
+                results = fRes.data.results.map(company => ({
+                    name: company.name,
+                    platform: "Fylings (CAC)",
+                    profileUrl: `https://fylings.com/company/${company.id}`,
+                    avatar: "https://via.placeholder.com/50?text=Biz",
+                    bio: `Director: ${company.director || 'N/A'} | Status: ${company.status}`
+                }));
+                break;
 
-        const base64Data = imageBase64.split(',')[1]; 
-        const mimeType = imageBase64.split(';')[0].split(':')[1];
-
-        const promptText = `You are the DESTINATION AI Co-Pilot. 
-The user is trying to sell or promote something to this target audience: "${targetAudience}".
-Look at the attached image. 
-1. Figure out what is being sold.
-2. Write a social media caption that is extremely polite, welcoming, and firm on the message.
-3. Do not sound like a spam bot. Sound like a human sharing something valuable.
-4. Include a placeholder for tags like [TAGS] at the end.
-5. Keep it under 280 characters. Keep it natural.`;
-
-        // --- USING NATIVE FETCH ---
-        // Note: Using gemini-1.5-flash which is universally supported
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
-        
-        const response = await fetch(geminiUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                contents: [{
-                    parts: [
-                        { text: promptText },
-                        { inline_data: { mime_type: mimeType, data: base64Data } }
-                    ]
-                }]
-            })
-        });
-
-        const data = await response.json();
-        
-        if (data.error) {
-            console.error("Gemini API Error:", data.error.message);
-            throw new Error(data.error.message);
-        }
-
-        const aiText = data.candidates[0].content.parts[0].text;
-        console.log("Gemini Success:", aiText);
-
-        res.status(200).json({ success: true, caption: aiText });
-
-    } catch (error) {
-        console.error("AI Error Details:", error.message);
-        res.status(500).json({ success: false, error: "Failed to generate caption." });
-    }
-});
-
-// 4. API Endpoint: Verify Paystack & Launch Campaign
-app.post('/api/launch', async (req, res) => {
-    try {
-        const { query, platforms, caption, budget, paymentRef } = req.body;
-        console.log("Verifying payment for ref:", paymentRef);
-
-        if (!paymentRef) {
-            return res.status(400).json({ success: false, message: "No payment reference provided." });
+            default:
+                return res.status(400).json({ error: "Industry not supported yet." });
         }
 
-        // 1. VERIFY WITH PAYSTACK
-        const paystackResponse = await axios.get(`https://api.paystack.co/transaction/verify/${paymentRef}`, {
-            headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` }
-        });
-
-        const paymentData = paystackResponse.data.data;
-
-        // 2. Ensure payment is actually successful
-        if (paymentData.status !== 'success') {
-            return res.status(400).json({ success: false, message: "Payment was not successful." });
-        }
-
-        // 3. Ensure amount paid matches budget
-        const amountPaidInNaira = paymentData.amount / 100;
-        if (amountPaidInNaira !== Number(budget)) {
-            return res.status(400).json({ success: false, message: "Payment amount mismatch." });
-        }
-
-        // 4. Calculate splits and save to Firebase
-        const serviceFee = budget * 0.20;
-        const adSpend = budget * 0.80;
-        
-        const docRef = await db.collection('campaigns').add({
-            query, platforms, caption,
-            budget: Number(budget),
-            serviceFee: Number(serviceFee),
-            adSpend: Number(adSpend),
-            paymentRef: paymentRef,
-            status: 'active',
-            createdAt: new Date() 
-        });
-
-        console.log("Campaign saved successfully to Firebase:", docRef.id);
-        res.status(200).json({ success: true, id: docRef.id });
+        res.json({ success: true, count: results.length, results });
 
     } catch (error) {
-        console.error("Payment Verification Error:", error.message);
-        res.status(500).json({ success: false, message: "Payment Verification Failed" });
+        console.error("Search Error:", error.message);
+        // Send a friendly error message to the frontend
+        res.status(500).json({ error: error.message || "Search failed. Check server logs." });
     }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Destination Backend running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Destination Federated Search running on port ${PORT}`));
